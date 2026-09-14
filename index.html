@@ -690,37 +690,63 @@ function bindPickerEvents(){
 var _renderSheet = renderSheet;
 renderSheet = function(html){ _renderSheet(html); };
 
+function normalizeOffHit(p){
+  var n = p.nutriments||{};
+  var brand = Array.isArray(p.brands) ? p.brands[0] : (p.brands ? String(p.brands).split(',')[0] : '');
+  return {
+    name: p.product_name_nl || p.product_name || '',
+    brand: brand,
+    kcal100: nutKcal(n),
+    protein100: n.proteins_100g||0,
+    carbs100: n.carbohydrates_100g||0,
+    fat100: n.fat_100g||0
+  };
+}
+
+function trySearchNew(q){
+  // search.openfoodfacts.org (search-a-licious) - actuele backend
+  return fetch('https://search.openfoodfacts.org/search?q='+encodeURIComponent(q)+'&page_size=20&langs=nl')
+    .then(function(r){ if(!r.ok) throw new Error('bad status'); return r.json(); })
+    .then(function(data){
+      var hits = (data.hits||[]).filter(function(p){ return p.product_name || p.product_name_nl; }).map(normalizeOffHit);
+      if(hits.length===0) throw new Error('geen resultaten');
+      return hits;
+    });
+}
+function trySearchLegacy(q){
+  // world.openfoodfacts.org/cgi/search.pl - oudere backend, soms tijdelijk uit
+  return fetch('https://world.openfoodfacts.org/cgi/search.pl?search_terms='+encodeURIComponent(q)+'&search_simple=1&action=process&json=1&page_size=20')
+    .then(function(r){ if(!r.ok) throw new Error('bad status'); return r.json(); })
+    .then(function(data){
+      var hits = (data.products||[]).filter(function(p){ return p.product_name; }).map(normalizeOffHit);
+      if(hits.length===0) throw new Error('geen resultaten');
+      return hits;
+    });
+}
+
 function doSearch(q){
   var box = document.getElementById('searchResults');
   box.innerHTML = '<p style="font-size:12.5px;color:var(--text-muted);">Zoeken&hellip;</p>';
-  fetch('https://world.openfoodfacts.org/cgi/search.pl?search_terms='+encodeURIComponent(q)+'&search_simple=1&action=process&json=1&page_size=20')
-    .then(function(r){ return r.json(); })
-    .then(function(data){
-      var products = (data.products||[]).filter(function(p){
-        return p.product_name && p.nutriments && (p.nutriments['energy-kcal_100g']!=null || p.nutriments['energy_100g']!=null);
-      }).slice(0,15);
-      if(products.length===0){ box.innerHTML='<p style="font-size:12.5px;color:var(--text-muted);">Niets gevonden. Probeer handmatig invoeren.</p>'; return; }
-      box.innerHTML = products.map(function(p, i){
-        var kcal = nutKcal(p.nutriments);
-        return '<div class="searchresult" data-idx="'+i+'"><span class="n">'+esc(p.product_name)+(p.brands?' <span style="color:var(--text-muted);">&middot; '+esc(p.brands.split(',')[0])+'</span>':'')+'</span><span class="k">'+round(kcal)+' kcal/100g</span></div>';
-      }).join('');
-      box.querySelectorAll('.searchresult').forEach(function(el){
-        el.onclick = function(){
-          var p = products[+el.dataset.idx];
-          var n = p.nutriments;
-          draftItem = {
-            name: p.product_name,
-            kcal100: nutKcal(n),
-            protein100: n.proteins_100g||0,
-            carbs100: n.carbohydrates_100g||0,
-            fat100: n.fat_100g||0,
-            amount: 100
-          };
-          renderSheet(amountFormHtml()); bindAmountEvents();
-        };
-      });
-    })
-    .catch(function(){ box.innerHTML='<p style="font-size:12.5px;color:var(--danger);">Zoeken mislukt. Controleer je internetverbinding.</p>'; });
+  trySearchNew(q).catch(function(){ return trySearchLegacy(q); })
+    .then(function(results){ renderSearchList(results); })
+    .catch(function(){
+      box.innerHTML = '<p style="font-size:12.5px;color:var(--text-muted);">Zoeken lukt nu niet (Open Food Facts tijdelijk niet bereikbaar, of geen verbinding). Gebruik Scannen of vul het handmatig in.</p>';
+    });
+}
+
+function renderSearchList(results){
+  var box = document.getElementById('searchResults');
+  results = results.slice(0,15);
+  box.innerHTML = results.map(function(p, i){
+    return '<div class="searchresult" data-idx="'+i+'"><span class="n">'+esc(p.name)+(p.brand?' <span style="color:var(--text-muted);">&middot; '+esc(p.brand)+'</span>':'')+'</span><span class="k">'+round(p.kcal100)+' kcal/100g</span></div>';
+  }).join('');
+  box.querySelectorAll('.searchresult').forEach(function(el){
+    el.onclick = function(){
+      var p = results[+el.dataset.idx];
+      draftItem = { name: p.name, kcal100: p.kcal100, protein100: p.protein100, carbs100: p.carbs100, fat100: p.fat100, amount: 100 };
+      renderSheet(amountFormHtml()); bindAmountEvents();
+    };
+  });
 }
 
 function nutKcal(n){
